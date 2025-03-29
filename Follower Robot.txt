@@ -1,0 +1,139 @@
+from imutils.video import VideoStream
+from imutils.video import FPS
+import numpy as np
+import argparse
+import imutils
+import time
+import cv2
+import robot
+import RPi.GPIO as GPIO
+GPIO.setmode(GPIO.BCM)
+
+prototxt = "MobileNetSSD_deploy.prototxt.txt"
+model = "MobileNetSSD_deploy.caffemodel"
+
+CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
+	"bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+	"dog", "horse", "motorbike", "person", "pottedplant", "sheep",
+	"sofa", "train", "tvmonitor"]
+COLORS = np.random.uniform(0, 255, size=(len(CLASSES), 3))
+
+
+print("[INFO] loading model...")
+net = cv2.dnn.readNetFromCaffe(prototxt, model)
+
+print("[INFO] starting video stream...")
+vs = VideoStream(src=0).start()
+# vs = VideoStream(usePiCamera=True).start()
+time.sleep(2.0)
+fps = FPS().start()
+counter = 0
+(dX, dY) = (0, 0)
+direction = ""
+center = None
+conf = 0.2
+
+
+TRIG=2
+ECHO=3
+GPIO.setup(TRIG,GPIO.OUT)
+GPIO.setup(ECHO,GPIO.IN)
+GPIO.output(TRIG, False)
+
+time.sleep(2)
+def val():
+	GPIO.output(TRIG, True)
+	time.sleep(0.00001)
+	GPIO.output(TRIG, False)
+	while GPIO.input(ECHO)==0:
+		pulse_start = time.time()
+	while GPIO.input(ECHO)==1:
+		pulse_end = time.time()
+	pulse_duration = pulse_end - pulse_start
+	distance = pulse_duration*17150
+	distance = round(distance, 2)
+	return distance
+
+while True:
+	x=val()
+	print(x)
+	frame = vs.read()
+	frame = imutils.resize(frame, width=600)
+
+	(h, w) = frame.shape[:2]
+	blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)),
+		0.007843, (300, 300), 127.5)
+
+	net.setInput(blob)
+	detections = net.forward()
+
+	for i in np.arange(0, detections.shape[2]):
+		confidence = detections[0, 0, i, 2]
+
+		if confidence > conf:
+
+			idx = int(detections[0, 0, i, 1])
+			box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+			(startX, startY, endX, endY) = box.astype("int")
+			
+			label = "{}: {:.2f}%".format(CLASSES[idx],
+				confidence * 100)
+			if CLASSES[idx] is "person":
+				boxFrame=cv2.rectangle(frame, (startX, startY), (endX, endY),
+					COLORS[idx], 2)
+				y = startY - 15 if startY - 15 > 15 else startY + 15
+				labelboxFrame=cv2.putText(boxFrame, label, (startX, y),
+					cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[idx], 2)
+				mask = np.zeros(boxFrame.shape,np.uint8)
+				mask[startY:endY,startX:endX] = boxFrame[startY:endY,startX:endX]
+				grayImg=cv2.cvtColor(mask.copy(), cv2.COLOR_RGB2GRAY)
+				contours, hierarchy = cv2.findContours(grayImg, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+				center = None	
+				if len(contours) > 0:
+						c = max(contours, key=cv2.contourArea)
+						((x, y), radius) = cv2.minEnclosingCircle(c)
+						M = cv2.moments(c)
+						center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+
+						if radius > 10:
+								cv2.circle(frame, (int(x), int(y)), int(radius),
+										(0, 255, 255), 2)
+								cv2.circle(frame, center, 5, (0, 0, 255), -1)
+								print(center,radius)
+								if radius > 300:
+										print("stop")
+
+								else:
+										if(center[0]<300):
+												print("Left")
+												robot.Left(0.1)
+										elif(center[0]>390):
+												print("Right")
+												robot.Right(0.1)
+										elif(radius<300):
+												x=val()
+												if (x > 10):
+													print("Front")
+													robot.Front(0.1)
+												else:
+													print("Obstacle detected")
+													robot.Stop(0)
+													
+										else:
+												print("Stop")
+												robot.Stop(0)
+				else:
+					pass
+	cv2.imshow("Frame", frame)
+	key = cv2.waitKey(1) & 0xFF
+
+	if key == ord("q"):
+		break
+
+	fps.update()
+
+fps.stop()
+print("[INFO] elapsed time: {:.2f}".format(fps.elapsed()))
+print("[INFO] approx. FPS: {:.2f}".format(fps.fps()))
+cv2.destroyAllWindows()
+vs.stop()
